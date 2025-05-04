@@ -1,21 +1,21 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # 文件名: ubuntu-init.sh
 
 # 0. 确保以普通用户运行并缓存 sudo 权限
-if [[ $EUID -eq 0 ]]; then
+if [ "$(id -u)" -eq 0 ]; then
   echo "请勿以 root 用户运行此脚本，请切换到普通用户并确保已加入 sudo 组。"
   exit 1
 fi
 sudo -v
 
 set -e
-shopt -s nullglob
 
 # ==== 交互式选项 ====
 # 0.1 输入 SSH 新端口号，必须正确输入
 while true; do
-  read -r -p "请输入新的 SSH 端口号（1024-65534）: " SSH_PORT
-  if [[ -n "$SSH_PORT" ]] && [[ "$SSH_PORT" =~ ^[0-9]+$ ]] && [ "$SSH_PORT" -ge 1024 ] && [ "$SSH_PORT" -le 65534 ]; then
+  printf "请输入新的 SSH 端口号（1024-65534）: "
+  read SSH_PORT
+  if [ -n "$SSH_PORT" ] && [ "$SSH_PORT" -ge 1024 ] && [ "$SSH_PORT" -le 65534 ] 2>/dev/null; then
     break
   else
     echo "端口号必须为数字，且在1024到65534之间，请重试。"
@@ -24,15 +24,17 @@ done
 
 # 0.2 交互选项：是否替换 APT 源、是否关闭防火墙 (UFW)
 echo "==> 请选择接下来的操作："
-read -r -p " 1) 是否替换 APT 源为阿里云镜像？[y/N]: " REPLACE_APT
-read -r -p " 2) 是否关闭系统防火墙（UFW）？[y/N]: " DISABLE_FW
+printf " 1) 是否替换 APT 源为阿里云镜像？[y/N]: "
+read REPLACE_APT
+printf " 2) 是否关闭系统防火墙（UFW）？[y/N]: "
+read DISABLE_FW
 echo
 
 # 时间戳用于备份
 timestamp=$(date +%Y%m%d_%H%M%S)
 
 # 1. 替换 APT 源为阿里云（简洁版）
-if [[ "${REPLACE_APT,,}" == "y" ]]; then
+if [ "$REPLACE_APT" = "y" ] || [ "$REPLACE_APT" = "Y" ]; then
   echo "==> 备份并替换 APT 源为阿里云镜像..."
   CODENAME=$(lsb_release -sc)
   sudo cp /etc/apt/sources.list /etc/apt/sources.list.bak.${timestamp}
@@ -82,7 +84,7 @@ echo "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true" 
 sudo DEBIAN_FRONTEND=noninteractive dpkg-reconfigure -f noninteractive unattended-upgrades
 
 # 6. 关闭 UFW（可选）
-if [[ "${DISABLE_FW,,}" == "y" ]]; then
+if [ "$DISABLE_FW" = "y" ] || [ "$DISABLE_FW" = "Y" ]; then
   echo "==> 停止并禁用 UFW..."
   if command -v ufw &>/dev/null; then
     sudo systemctl stop ufw && sudo systemctl disable ufw
@@ -119,15 +121,16 @@ echo -e "${GREEN}✔ NTP 同步：$(timedatectl show -p NTPSynchronized | cut -d
 echo -e "${GREEN}✔ UFW 状态：${RESET}$(command -v ufw &>/dev/null && sudo ufw status | head -n1 || echo '未安装或未启用')"
 auto_upg_val=$(grep -E 'APT::Periodic::Unattended-Upgrade' /etc/apt/apt.conf.d/20auto-upgrades 2>/dev/null | awk -F '"' '{print $2}')
 auto_upg_status="未开启"
-[[ "${auto_upg_val}" == "1" ]] && auto_upg_status="已开启"
+[ "${auto_upg_val}" = "1" ] && auto_upg_status="已开启"
 echo -e "${GREEN}✔ 自动更新：${RESET}${auto_upg_status}"
 echo -e "${GREEN}✔ SSH 端口：${RESET}$(grep -E '^Port ' /etc/ssh/sshd_config | awk '{print $2}')"
 echo -e "${YELLOW}⚠ 待升级包：$(apt list --upgradable 2>/dev/null | grep upgradable || echo '无')${RESET}"
 
 # 10. 重启确认
 echo "==> 操作完成。"
-read -r -p "是否现在重启系统？[y/N]: " REBOOT_CONFIRM
-if [[ "${REBOOT_CONFIRM,,}" == "y" ]]; then
+printf "是否现在重启系统？[y/N]: "
+read REBOOT_CONFIRM
+if [ "$REBOOT_CONFIRM" = "y" ] || [ "$REBOOT_CONFIRM" = "Y" ]; then
   echo "正在重启..."
   sudo reboot
 else
