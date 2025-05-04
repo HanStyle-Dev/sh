@@ -215,6 +215,7 @@ install_docker() {
             if [ "$OS" = "centos" ] || [ "$OS" = "rhel" ] || [ "$OS" = "fedora" ]; then
                 systemctl enable docker
                 systemctl start docker
+                sudo usermod -aG docker $USER && newgrp docker 
             fi
             ;;
         alpine)
