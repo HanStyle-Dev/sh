@@ -1,5 +1,4 @@
 #!/bin/sh
-# 文件名: ubuntu-init.sh
 
 # 0. 确保以普通用户运行并缓存 sudo 权限
 if [ "$(id -u)" -eq 0 ]; then
