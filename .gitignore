@@ -1,2 +1,4 @@
 docker-compose.yaml
 AGENT.md
+CLAUDE.md
+.claudecode/
