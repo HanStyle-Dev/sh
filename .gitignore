@@ -1,4 +1,6 @@
 docker-compose.yaml
 AGENT.md
+CLAUDE.md
+.claudecode/
 .vscode/*
 .spec-workflow

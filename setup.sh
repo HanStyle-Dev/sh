@@ -35,6 +35,13 @@ handle_error() {
 check_root() {
     if [ "$(id -u)" -ne 0 ]; then
         error "请使用root权限运行此脚本"
+        echo ""
+        echo "正确的运行方式："
+        echo "  sudo $0 $*"
+        echo ""
+        echo "提示：如果刚运行过 ubuntu-init.sh 并重启，请注意："
+        echo "  1. SSH端口可能已更改（检查 /etc/ssh/sshd_config）"
+        echo "  2. 使用 sudo 运行本脚本"
         exit 1
     fi
 }
