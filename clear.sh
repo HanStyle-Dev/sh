@@ -50,6 +50,7 @@ SAFE_REMOTE=false        # 远程安全模式：保护当前会话与网络
 PROTECT_SESSIONS=false   # 是否保护当前会话/TTY/sshd
 PROTECT_NETWORK=false    # 是否保留关键网络服务
 PURGE_CONTAINERS=false   # 是否卸载容器/编排组件及附加服务
+FORCE=false              # 是否跳过交互确认
 
 UID_MIN=1000
 NOLOGIN_SHELL="/usr/sbin/nologin"
@@ -1012,8 +1013,8 @@ EOF
 }
 
 parse_arguments() {
-    local FORCE=false
-    
+    FORCE=false
+
     while [[ $# -gt 0 ]]; do
         case $1 in
             -h|--help)

@@ -1,6 +1,6 @@
 # HanStyle 服务器工具集
 
-这个项目提供了一系列脚本，用于快速初始化和配置服务器环境，包括Docker服务、DNS服务、监控工具和性能测试工具。全部脚本采用POSIX兼容的shell语法，确保在各种环境下可靠运行。
+这个项目提供了一系列脚本，用于快速初始化和配置服务器环境，包括Docker服务、DNS服务、监控工具和性能测试工具。除 `ubuntu-init.sh` 以外的脚本依赖 Bash 特性，请确保使用 Bash 运行。
 
 ## 项目组件
 
@@ -48,13 +48,28 @@ Ubuntu服务器初始化脚本，专为新建服务器设计，提供以下功�
 使用以下命令可以直接从 GitHub 获取并运行脚本（需要root权限）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/HanStyle-Dev/sh/main/setup.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/HanStyle-Dev/sh/main/setup.sh | sudo bash
 ```
 
 如果需要指定参数，可以使用以下方式：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/HanStyle-Dev/sh/main/setup.sh | sudo sh -s -- --debug
+curl -fsSL https://raw.githubusercontent.com/HanStyle-Dev/sh/main/setup.sh | sudo bash -s -- --debug
+```
+
+### clear.sh 在线运行
+
+清理脚本依赖 Bash，请仅在确认目标环境的风险后运行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/HanStyle-Dev/sh/main/clear.sh | sudo bash -s --
+```
+
+若需传入选项（例如删除普通用户并清理容器），在 `--` 后追加参数：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/HanStyle-Dev/sh/main/clear.sh | \
+  sudo bash -s -- --remove --purge-containers --force
 ```
 
 ### ubuntu-init.sh 在线运行
