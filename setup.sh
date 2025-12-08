@@ -1,6 +1,12 @@
 #!/bin/sh
 set -e
 
+# ==== 可配置变量（可通过环境变量覆盖）====
+DOCKER_MIRROR="${DOCKER_MIRROR:-Aliyun}"            # Docker 安装镜像源
+HOMEBOX_PORT="${HOMEBOX_PORT:-80}"                  # Homebox 端口
+UPTIME_PORT="${UPTIME_PORT:-8080}"                  # Uptime Kuma 端口
+IPERF3_PORT="${IPERF3_PORT:-5201}"                  # iperf3 端口
+
 DEBUG_MODE=false
 
 info() {
@@ -34,6 +40,11 @@ handle_error() {
 
 check_root() {
     if [ "$(id -u)" -ne 0 ]; then
+        # 尝试自动使用 sudo 提权重新执行脚本
+        if command -v sudo >/dev/null 2>&1; then
+            warning "需要 root 权限，尝试使用 sudo 重新执行..."
+            exec sudo "$0" "$@"
+        fi
         error "请使用root权限运行此脚本"
         echo ""
         echo "正确的运行方式："
@@ -216,8 +227,8 @@ install_docker() {
 
     case $OS in
         ubuntu|debian|centos|rhel|fedora)
-            debug "使用阿里云镜像安装Docker和Docker Compose..."
-            curl -fsSL https://get.docker.com | sh -s -- --mirror Aliyun --compose
+            debug "使用镜像源 ${DOCKER_MIRROR} 安装Docker和Docker Compose..."
+            curl -fsSL https://get.docker.com | sh -s -- --mirror "${DOCKER_MIRROR}" --compose
 
             if [ "$OS" = "centos" ] || [ "$OS" = "rhel" ] || [ "$OS" = "fedora" ]; then
                 systemctl enable docker
@@ -292,7 +303,7 @@ install_docker_compose() {
 
 generate_docker_compose() {
     debug "生成docker-compose.yaml文件..."
-    cat > docker-compose.yaml << 'EOF'
+    cat > docker-compose.yaml << EOF
 services:
   unbound:
     image: nodecloud/unbound:latest
@@ -344,7 +355,7 @@ services:
   homebox:
     image: xgheaven/homebox
     ports:
-      - 80:3300
+      - ${HOMEBOX_PORT:-80}:3300
     restart: always
     logging:
       driver: json-file
@@ -359,7 +370,7 @@ services:
   uptime:
     image: louislam/uptime-kuma
     ports:
-      - 8080:3001
+      - ${UPTIME_PORT:-8080}:3001
     volumes:
       - "uptime-kuma:/app/data"
     restart: always
@@ -380,8 +391,8 @@ services:
   iperf3:
     image: networkstatic/iperf3
     ports:
-      - "5201:5201/tcp"
-      - "5201:5201/udp"
+      - "${IPERF3_PORT:-5201}:5201/tcp"
+      - "${IPERF3_PORT:-5201}:5201/udp"
     command: -s -V -d -p 5201
     restart: always
     logging:
@@ -426,12 +437,71 @@ docker_compose_exec() {
     return $?
 }
 
+# 等待容器健康状态的函数
+# 用法: wait_healthy <容器名> [超时秒数] [检查间隔]
+wait_healthy() {
+    local container="$1"
+    local timeout="${2:-60}"
+    local interval="${3:-5}"
+    local elapsed=0
+    local health_status
+    
+    debug "等待容器 $container 变为健康状态 (超时: ${timeout}s)..."
+    
+    while [ $elapsed -lt $timeout ]; do
+        # 检查容器是否存在且运行中
+        if ! docker inspect "$container" >/dev/null 2>&1; then
+            debug "容器 $container 不存在"
+            return 1
+        fi
+        
+        # 获取健康状态
+        health_status=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' "$container" 2>/dev/null)
+        
+        case "$health_status" in
+            healthy)
+                debug "容器 $container 健康状态: healthy"
+                return 0
+                ;;
+            no-healthcheck)
+                # 无健康检查，检查容器是否运行中
+                if docker inspect --format='{{.State.Running}}' "$container" 2>/dev/null | grep -q "true"; then
+                    debug "容器 $container 运行中 (无健康检查)"
+                    return 0
+                fi
+                ;;
+            unhealthy)
+                debug "容器 $container 健康状态: unhealthy"
+                return 1
+                ;;
+            starting)
+                debug "容器 $container 健康状态: starting (等待中...)"
+                ;;
+        esac
+        
+        sleep $interval
+        elapsed=$((elapsed + interval))
+    done
+    
+    warning "容器 $container 健康检查超时"
+    return 1
+}
+
 check_service_health() {
     local service_name="$1"
     local compose_cmd
     compose_cmd=$(get_docker_compose_cmd)
 
-    if [ "$($compose_cmd ps $service_name | grep -c "Up")" -gt 0 ]; then
+    # 通过 docker compose 获取容器 ID，避免依赖容器名
+    local container_id
+    container_id=$($compose_cmd ps -q "$service_name")
+
+    if [ -z "$container_id" ]; then
+        error "$service_name 容器不存在或未启动"
+        return 1
+    fi
+
+    if wait_healthy "$container_id" 30 3; then
         debug "$service_name 服务运行正常"
         return 0
     else
@@ -511,10 +581,10 @@ start_services() {
     printf "\n"
     info "服务访问信息:"
     printf "%s\n" "------------------------------------"
-    printf "Homebox: http://%s:80\n" "$host_ip"
-    printf "Uptime Kuma: http://%s:8080\n" "$host_ip"
+    printf "Homebox: http://%s:%s\n" "$host_ip" "${HOMEBOX_PORT:-80}"
+    printf "Uptime Kuma: http://%s:%s\n" "$host_ip" "${UPTIME_PORT:-8080}"
     printf "DNS服务: %s:53\n" "$host_ip"
-    printf "iperf3服务: %s:5201\n" "$host_ip"
+    printf "iperf3服务: %s:%s\n" "$host_ip" "${IPERF3_PORT:-5201}"
     printf "%s\n" "------------------------------------"
 }
 
@@ -752,7 +822,7 @@ main() {
         exit 0
     fi
 
-    check_root
+    check_root "$@"
     detect_os
     check_required_commands
     check_port_53
