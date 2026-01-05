@@ -10,10 +10,16 @@ RESOLV_UPSTREAM="${RESOLV_UPSTREAM:-223.5.5.5 8.8.8.8}"  # 关闭 stub 后使用
 
 # 0. 确保以普通用户运行并缓存 sudo 权限
 if [ "$(id -u)" -eq 0 ]; then
-  echo "请勿以 root 用户运行此脚本，请切换到普通用户并确保已加入 sudo 组。"
+  echo "❌ 请勿以 root 用户运行此脚本,请切换到普通用户并确保已加入 sudo 组。"
   exit 1
 fi
-sudo -v || true
+
+# P0 修复: 强化 sudo 权限检查,不掩盖错误
+if ! sudo -v; then
+  echo "❌ 当前用户没有 sudo 权限,请联系管理员添加到 sudo 组"
+  echo "提示: sudo usermod -aG sudo \$(whoami)"
+  exit 1
+fi
 
 # 修复主机名解析问题
 HOSTNAME=$(hostname)
@@ -26,62 +32,150 @@ set -e
 
 # ==== 工具函数 ====
 
-warning() {
-  printf "⚠ %s\n" "$1"
+# P2: 添加统一日志函数
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+info() { printf "${BLUE}ℹ %s${NC}\n" "$1"; }
+success() { printf "${GREEN}✓ %s${NC}\n" "$1"; }
+warning() { printf "${YELLOW}⚠ %s${NC}\n" "$1"; }
+error() { printf "${RED}✗ %s${NC}\n" "$1" >&2; }
+
+# P2: 提取通用备份函数 (DRY 原则)
+backup_file() {
+  _backup_file="$1"
+  _backup_timestamp="${2:-$(date +%Y%m%d_%H%M%S)}"
+
+  # 创建原始备份 (仅首次)
+  if [ ! -f "${_backup_file}.original" ]; then
+    sudo cp "$_backup_file" "${_backup_file}.original"
+    info "创建原始备份: ${_backup_file}.original"
+  fi
+
+  # 创建时间戳备份
+  sudo cp "$_backup_file" "${_backup_file}.bak.${_backup_timestamp}"
+  info "创建时间戳备份: ${_backup_file}.bak.${_backup_timestamp}"
 }
 
 # ==== 模块化功能函数 ====
 
 # 配置 APT 源
 configure_apt() {
+  # P0: 添加幂等性检测
+  if grep -q "${APT_MIRROR}" /etc/apt/sources.list 2>/dev/null; then
+    info "APT 源已经配置为 ${APT_MIRROR},跳过"
+    return 0
+  fi
+
   if [ "$REPLACE_APT" = "y" ] || [ "$REPLACE_APT" = "Y" ]; then
     echo "==> 备份并替换 APT 源为 ${APT_MIRROR}..."
     CODENAME=$(lsb_release -sc)
-    sudo cp /etc/apt/sources.list /etc/apt/sources.list.bak.${timestamp}
+    backup_file /etc/apt/sources.list "${timestamp}"
     sudo tee /etc/apt/sources.list > /dev/null <<EOF
 deb https://${APT_MIRROR}/ubuntu/ ${CODENAME} main restricted universe multiverse
 deb https://${APT_MIRROR}/ubuntu/ ${CODENAME}-security main restricted universe multiverse
 deb https://${APT_MIRROR}/ubuntu/ ${CODENAME}-updates main restricted universe multiverse
 EOF
-    echo "APT 源已替换，备份保存在 /etc/apt/sources.list.bak.${timestamp}"
+    success "APT 源已替换为 ${APT_MIRROR}"
   else
-    echo "==> 跳过 APT 源替换。"
+    info "跳过 APT 源替换"
   fi
 }
 
 # 安装常用工具
 install_packages() {
-  echo "==> 更新并升级系统补丁..."
+  # P0: 修复 nexttrace 源重复添加
+  if [ ! -f /etc/apt/sources.list.d/nexttrace.list ]; then
+    info "添加 nexttrace 软件源"
+    echo "deb [trusted=yes] https://github.com/nxtrace/nexttrace-debs/releases/latest/download ./" | sudo tee /etc/apt/sources.list.d/nexttrace.list > /dev/null
+  else
+    info "nexttrace 源已存在,跳过"
+  fi
+
+  # P1: 合并 apt update 调用优化性能
+  echo "==> 更新软件包索引并升级系统补丁..."
   sudo apt update && sudo apt upgrade -y
 
   echo "==> 安装常用命令行工具..."
   sudo apt install -y --no-install-recommends $COMMON_PACKAGES
 
-  echo "==> 安装虚拟化集成包..."
+  # P1: 批量安装虚拟化包
+  echo "==> 检测并安装虚拟化集成包..."
+  VIRT_PACKAGES=""
   for pkg in linux-azure open-vm-tools qemu-guest-agent; do
     if apt-cache show "$pkg" >/dev/null 2>&1; then
-      sudo apt install -y --no-install-recommends "$pkg"
-    else
-      echo "提示：$pkg 不可用，已跳过。"
+      VIRT_PACKAGES="$VIRT_PACKAGES $pkg"
     fi
   done
 
-  echo "==> 安装 nexttrace..."
-  echo "deb [trusted=yes] https://github.com/nxtrace/nexttrace-debs/releases/latest/download ./" | sudo tee /etc/apt/sources.list.d/nexttrace.list > /dev/null
-  sudo apt update
-  sudo apt install -y nexttrace
+  if [ -n "$VIRT_PACKAGES" ]; then
+    sudo apt install -y --no-install-recommends $VIRT_PACKAGES
+    success "已安装虚拟化包:$VIRT_PACKAGES"
+  else
+    warning "未检测到可用的虚拟化集成包"
+  fi
+
+  # 安装 nexttrace
+  if ! command -v nexttrace >/dev/null 2>&1; then
+    echo "==> 安装 nexttrace..."
+    sudo apt install -y nexttrace
+  else
+    info "nexttrace 已安装,跳过"
+  fi
 }
 
 # 配置 SSH
 configure_ssh() {
+  # P0: 添加幂等性检测
+  _ssh_current_port=$(grep -E '^Port ' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}')
+
+  if [ "$_ssh_current_port" = "$SSH_PORT" ]; then
+    info "SSH 端口已经是 ${SSH_PORT},跳过配置"
+    return 0
+  fi
+
   echo "==> 修改 SSH 默认端口为 ${SSH_PORT}..."
-  sudo cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak.${timestamp}
+  backup_file /etc/ssh/sshd_config "${timestamp}"
+
   sudo sed -i -E "s/^#?Port[[:space:]]+[0-9]+/Port ${SSH_PORT}/" /etc/ssh/sshd_config
-  if sudo sshd -t; then
+
+  # P0: SSH 配置语法检查
+  if ! sudo sshd -t; then
+    error "SSH 配置语法检查失败,正在回滚..."
+    sudo cp "/etc/ssh/sshd_config.bak.${timestamp}" /etc/ssh/sshd_config
+    return 1
+  fi
+
+  # 重载 SSH 服务
+  if ! sudo systemctl reload ssh; then
+    error "SSH 服务重载失败,正在回滚..."
+    sudo cp "/etc/ssh/sshd_config.bak.${timestamp}" /etc/ssh/sshd_config
     sudo systemctl reload ssh
-    echo "SSH 端口已设置为 $(grep -E '^Port ' /etc/ssh/sshd_config | awk '{print $2}')"
+    return 1
+  fi
+
+  # P0: 等待服务重载并验证新端口
+  sleep 2
+
+  if ss -tlnp 2>/dev/null | grep -q ":${SSH_PORT} "; then
+    success "SSH 端口已成功设置为 ${SSH_PORT}"
+
+    # P1: 增强警告提示
+    echo ""
+    echo "════════════════════════════════════════════════"
+    warning "SSH 端口已修改为: ${SSH_PORT}"
+    warning "请在新终端测试连接: ssh -p ${SSH_PORT} user@host"
+    warning "确认连接成功后再关闭当前会话!"
+    echo "════════════════════════════════════════════════"
+    echo ""
   else
-    echo "⚠ SSH 配置语法检查失败，请检查 /etc/ssh/sshd_config。"
+    error "SSH 端口监听失败,正在回滚..."
+    sudo cp "/etc/ssh/sshd_config.bak.${timestamp}" /etc/ssh/sshd_config
+    sudo systemctl reload ssh
+    return 1
   fi
 }
 
@@ -113,84 +207,148 @@ configure_bbr() {
   echo "==> 启用 BBR..."
   ensure_kv /etc/sysctl.conf "net.core.default_qdisc" "fq"
   ensure_kv /etc/sysctl.conf "net.ipv4.tcp_congestion_control" "bbr"
-  sudo sysctl -p || echo "⚠ BBR 加载失败"
+
+  # P2: 改进错误处理,移除 || true
+  if ! sudo sysctl -p >/dev/null 2>&1; then
+    warning "BBR 配置加载失败,可能需要重启生效"
+    return 1
+  fi
+  success "BBR 已成功启用"
 }
 
 # 配置时区和 NTP
 configure_timezone() {
-  echo "==> 设置时区为 ${TIMEZONE}，启用 NTP 同步..."
+  echo "==> 设置时区为 ${TIMEZONE},启用 NTP 同步..."
   sudo timedatectl set-timezone "$TIMEZONE"
   sudo timedatectl set-ntp true
-  sudo sed -i "s|^#*NTP=.*|NTP=${NTP_SERVER}|" /etc/systemd/timesyncd.conf && sudo systemctl restart systemd-timesyncd || true
+
+  # P2: 改进错误处理
+  if sudo sed -i "s|^#*NTP=.*|NTP=${NTP_SERVER}|" /etc/systemd/timesyncd.conf; then
+    sudo systemctl restart systemd-timesyncd
+    success "时区和 NTP 配置完成"
+  else
+    warning "NTP 服务器配置失败"
+  fi
 }
 
 # 显示最终检测结果
 show_results() {
-  printf "\n===== 最终结果检测 =====\n\n"
-  printf "✓ BBR：%s\n" "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo '未启用')"
-  printf "✓ 队列调度：%s\n" "$(sysctl -n net.core.default_qdisc 2>/dev/null || echo '未设置')"
-  printf "✓ 时区：%s\n" "$(timedatectl status 2>/dev/null | grep 'Time zone' || echo '未设置')"
-  printf "✓ NTP 同步：%s\n" "$(timedatectl show -p NTPSynchronized 2>/dev/null | cut -d= -f2 || echo '未知')"
-  printf "✓ UFW 状态：%s\n" "$(command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | head -n1 || echo '未安装或未启用')"
-  
-  local auto_upg_val auto_upg_status port53_status
-  auto_upg_val=$(grep -E 'APT::Periodic::Unattended-Upgrade' /etc/apt/apt.conf.d/20auto-upgrades 2>/dev/null | awk -F '"' '{print $2}')
-  auto_upg_status="未开启"
-  [ "${auto_upg_val}" = "1" ] && auto_upg_status="已开启"
-  printf "✓ 自动更新：%s\n" "${auto_upg_status}"
-  printf "✓ SSH 端口：%s\n" "$(grep -E '^Port ' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' || echo '未设置')"
-  
-  port53_status="可用"
-  ss -ulpn 2>/dev/null | grep -q ":53 " && port53_status="被占用"
-  printf "✓ 53端口状态：%s\n" "${port53_status}"
-  printf "! 待升级包：%s\n" "$(apt list --upgradable 2>/dev/null | grep -i upgradable || echo '无')"
+  # P2: 优化输出格式
+  printf "\n═══════════════════════════════════\n"
+  printf "         最终配置检测结果          \n"
+  printf "═══════════════════════════════════\n\n"
+
+  # BBR 状态
+  _bbr_status=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "未启用")
+  printf "%-20s %s\n" "BBR 拥塞控制:" "$_bbr_status"
+
+  # 队列调度
+  _qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "未设置")
+  printf "%-20s %s\n" "队列调度算法:" "$_qdisc"
+
+  # 时区
+  _tz=$(timedatectl show -p Timezone --value 2>/dev/null || echo "未知")
+  printf "%-20s %s\n" "系统时区:" "$_tz"
+
+  # NTP 同步
+  _ntp_sync=$(timedatectl show -p NTPSynchronized --value 2>/dev/null)
+  if [ "$_ntp_sync" = "yes" ]; then
+    printf "%-20s %s\n" "NTP 同步:" "✓ 已同步"
+  else
+    printf "%-20s %s\n" "NTP 同步:" "❌ 未同步"
+  fi
+
+  # UFW 状态
+  _ufw_status="未安装"
+  if command -v ufw >/dev/null 2>&1; then
+    _ufw_status=$(sudo ufw status 2>/dev/null | head -n1)
+  fi
+  printf "%-20s %s\n" "UFW 状态:" "$_ufw_status"
+
+  # 自动更新
+  _auto_upg_val=$(grep -E 'APT::Periodic::Unattended-Upgrade' /etc/apt/apt.conf.d/20auto-upgrades 2>/dev/null | awk -F '"' '{print $2}')
+  if [ "${_auto_upg_val}" = "1" ]; then
+    printf "%-20s %s\n" "自动更新:" "✓ 已开启"
+  else
+    printf "%-20s %s\n" "自动更新:" "❌ 未开启"
+  fi
+
+  # SSH 端口
+  _ssh_port=$(grep -E '^Port ' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}')
+  printf "%-20s %s\n" "SSH 端口:" "${_ssh_port:-未设置}"
+
+  # 53端口状态
+  if ss -ulpn 2>/dev/null | grep -q ":53 "; then
+    printf "%-20s %s\n" "53端口状态:" "❌ 被占用"
+  else
+    printf "%-20s %s\n" "53端口状态:" "✓ 可用"
+  fi
+
+  # 待升级包数量
+  _upgrade_count=$(apt list --upgradable 2>/dev/null | grep -c upgradable || echo "0")
+  printf "%-20s %s\n" "待升级软件包:" "$_upgrade_count 个"
+
+  printf "\n"
 }
 
-# 幂等的键值配置函数：确保配置文件中的键值对只出现一次
+# 幂等的键值配置函数:确保配置文件中的键值对只出现一次
 # 用法: ensure_kv "配置文件" "键" "值"
 ensure_kv() {
-  local file="$1" key="$2" val="$3"
-  if grep -q "^${key}=" "$file" 2>/dev/null; then
-    sudo sed -i "s|^${key}=.*|${key}=${val}|" "$file"
-  elif grep -q "^#${key}=" "$file" 2>/dev/null; then
-    sudo sed -i "s|^#${key}=.*|${key}=${val}|" "$file"
+  _kv_file="$1"
+  _kv_key="$2"
+  _kv_val="$3"
+
+  if grep -q "^${_kv_key}=" "$_kv_file" 2>/dev/null; then
+    sudo sed -i "s|^${_kv_key}=.*|${_kv_key}=${_kv_val}|" "$_kv_file"
+  elif grep -q "^#${_kv_key}=" "$_kv_file" 2>/dev/null; then
+    sudo sed -i "s|^#${_kv_key}=.*|${_kv_key}=${_kv_val}|" "$_kv_file"
   else
-    echo "${key}=${val}" | sudo tee -a "$file" > /dev/null
+    echo "${_kv_key}=${_kv_val}" | sudo tee -a "$_kv_file" > /dev/null
   fi
 }
 
 # 可复用的端口53释放函数
 # 返回值: 0=成功释放或无需处理, 1=失败
 free_port53() {
-  local timestamp="$1"
-  
+  _port53_timestamp="$1"
+
   if ! systemctl is-active systemd-resolved >/dev/null 2>&1; then
     return 0
   fi
-  
+
   if ! ss -ulpn 2>/dev/null | grep -q ":53 "; then
     return 0
   fi
-  
+
   if ! ss -ulpn 2>/dev/null | grep ":53 " | grep -q "systemd-resolve"; then
-    echo "⚠ 53端口被其他服务占用，非 systemd-resolved"
+    warning "53端口被其他服务占用,非 systemd-resolved"
     return 1
   fi
-  
+
   echo "==> 正在配置 systemd-resolved 以释放 53 端口..."
-  
-  # 备份配置文件
-  if [ -n "$timestamp" ]; then
-    sudo cp /etc/systemd/resolved.conf /etc/systemd/resolved.conf.bak.${timestamp}
+
+  # P0: 备份原始 resolv.conf 链接目标
+  _resolv_target=""
+  if [ -L /etc/resolv.conf ]; then
+    _resolv_target=$(readlink -f /etc/resolv.conf)
+    info "备份 resolv.conf 链接目标: $_resolv_target"
   fi
-  
+
+  # 备份配置文件
+  if [ -n "$_port53_timestamp" ]; then
+    backup_file /etc/systemd/resolved.conf "${_port53_timestamp}"
+  fi
+
   # 使用幂等方式设置 DNSStubListener
   ensure_kv /etc/systemd/resolved.conf "DNSStubListener" "no"
-  
+
   # 重启服务
-  sudo systemctl restart systemd-resolved
-  
-  # 配置 resolv.conf，使用可用上游 DNS
+  if ! sudo systemctl restart systemd-resolved; then
+    error "systemd-resolved 重启失败"
+    return 1
+  fi
+
+  # P0: 配置 resolv.conf,使用可用上游 DNS
   if [ -L /etc/resolv.conf ]; then
     sudo rm -f /etc/resolv.conf
   fi
@@ -202,23 +360,49 @@ free_port53() {
     done
     echo "options edns0 trust-ad"
   } | sudo tee /etc/resolv.conf > /dev/null
-  
-  echo "systemd-resolved 已配置为不占用 53 端口"
+
+  # P0: 验证 DNS 解析
+  sleep 1
+  if ! nslookup google.com >/dev/null 2>&1 && ! host google.com >/dev/null 2>&1; then
+    error "DNS 解析失败,正在回滚配置..."
+
+    # 回滚 resolv.conf
+    if [ -n "$_resolv_target" ]; then
+      sudo ln -sf "$_resolv_target" /etc/resolv.conf
+      info "已回滚 resolv.conf 到: $_resolv_target"
+    fi
+
+    # 回滚 systemd-resolved 配置
+    if [ -f "/etc/systemd/resolved.conf.bak.${_port53_timestamp}" ]; then
+      sudo cp "/etc/systemd/resolved.conf.bak.${_port53_timestamp}" /etc/systemd/resolved.conf
+      sudo systemctl restart systemd-resolved
+    fi
+
+    return 1
+  fi
+
+  success "systemd-resolved 已配置为不占用 53 端口,DNS 解析正常"
   return 0
 }
 
 # ==== 交互式选项 ====
-# 确保从终端读取输入，而不是标准输入
-# 尝试直接使用/dev/tty，这在管道模式下也能工作
+# 确保从终端读取输入,而不是标准输入
+# 尝试直接使用/dev/tty,这在管道模式下也能工作
 if [ -t 0 ]; then
-  # 标准输入是终端，可以直接使用
+  # 标准输入是终端,可以直接使用
   TTY_INPUT=/dev/stdin
 elif [ -c /dev/tty ]; then
-  # 标准输入不是终端，但/dev/tty可用
+  # 标准输入不是终端,但/dev/tty可用
   TTY_INPUT=/dev/tty
 else
-  # 没有可用的终端，使用默认值
-  echo "⚠️ 无法检测到交互式终端，将使用默认值。"
+  # P1: 优化非交互模式提示信息
+  echo ""
+  warning "无法检测到交互式终端,使用默认配置:"
+  echo "  - SSH 端口: ${DEFAULT_SSH_PORT}"
+  echo "  - APT 源替换: 否"
+  echo "  - 关闭防火墙: 否"
+  echo ""
+
   TTY_INPUT=""
   # 设置默认值
   SSH_PORT="$DEFAULT_SSH_PORT"

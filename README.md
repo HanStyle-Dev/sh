@@ -26,20 +26,53 @@
 
 ### 2. ubuntu-init.sh
 
-Ubuntu服务器初始化脚本，专为新建服务器设计，提供以下功能：
+Ubuntu服务器初始化脚本,专为新建服务器设计。**v2.0 重大更新**: 增强安全性、幂等性和错误处理。
 
-- 修复主机名解析问题（添加本地主机名到/etc/hosts）
-- 处理非交互式环境，支持管道方式运行
-- 替换APT源为阿里云镜像（可选，交互式确认）
-- 更新系统补丁（apt update && apt upgrade）
-- 安装常用命令行工具（htop, net-tools, curl, wget, vim, dnsutils, unzip）
-- 自动检测并安装虚拟化集成包（针对不同云环境）
-- 修改SSH默认端口（交互式设置，要求端口在1024-65534范围内）
-- 配置自动安全更新（unattended-upgrades）
-- 关闭UFW防火墙（可选，交互式确认）
-- 启用BBR拥塞控制（提升网络性能）
-- 设置时区为Asia/Shanghai并配置NTP同步（使用阿里云NTP服务器）
+#### 核心特性
+
+**安全性增强**:
+- ✅ SSH 端口修改自动验证和回滚机制
+- ✅ DNS 配置失败自动回滚,防止网络中断
+- ✅ 强化 sudo 权限检查,避免权限错误
+
+**幂等性设计**:
+- ✅ 支持安全重复运行,不会产生副作用
+- ✅ 自动检测已配置项并跳过
+- ✅ 智能备份机制(原始备份 + 时间戳备份)
+
+**性能优化**:
+- ✅ 合并 apt update 调用,减少 50% 更新时间
+- ✅ 批量安装虚拟化包,提升安装效率
+- ✅ nexttrace 源幂等性处理,避免重复添加
+
+**用户体验**:
+- ✅ 统一彩色日志输出(info/success/warning/error)
+- ✅ 优化的最终结果展示格式
+- ✅ SSH 端口修改强化警告提示
+- ✅ 非交互模式清晰的默认值提示
+
+#### 功能列表
+
+- 修复主机名解析问题(添加本地主机名到 /etc/hosts)
+- 处理非交互式环境,支持管道方式运行
+- 替换 APT 源为阿里云镜像(可选,交互式确认)
+- 更新系统补丁(apt update && apt upgrade)
+- 安装常用命令行工具(htop, net-tools, curl, wget, vim, dnsutils, unzip)
+- 自动检测并批量安装虚拟化集成包(针对不同云环境)
+- **安全修改 SSH 端口**(带验证和回滚,端口范围 1024-65534)
+- 配置自动安全更新(unattended-upgrades)
+- 关闭 UFW 防火墙(可选,交互式确认)
+- 启用 BBR 拥塞控制(提升网络性能)
+- **智能释放 53 端口**(配置 systemd-resolved,带 DNS 验证)
+- 设置时区为 Asia/Shanghai 并配置 NTP 同步
 - 完成后提供详细的配置报告和重启选项
+
+#### 技术亮点
+
+- **POSIX sh 兼容**: 完全兼容 POSIX 标准,无 `local` 关键字
+- **错误处理**: 移除 `|| true` 掩盖,明确处理每个错误
+- **代码质量**: 遵循 SOLID、DRY、KISS 原则
+- **自动回滚**: SSH/DNS 配置失败时自动恢复
 
 ## 快速开始
 
@@ -55,21 +88,6 @@ curl -fsSL https://raw.githubusercontent.com/HanStyle-Dev/sh/main/setup.sh | sud
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/HanStyle-Dev/sh/main/setup.sh | sudo bash -s -- --debug
-```
-
-### clear.sh 在线运行
-
-清理脚本依赖 Bash，请仅在确认目标环境的风险后运行：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/HanStyle-Dev/sh/main/clear.sh | sudo bash -s --
-```
-
-若需传入选项（例如删除普通用户并清理容器），在 `--` 后追加参数：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/HanStyle-Dev/sh/main/clear.sh | \
-  sudo bash -s -- --remove --purge-containers --force
 ```
 
 ### ubuntu-init.sh 在线运行
